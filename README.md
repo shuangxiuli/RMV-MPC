@@ -9,7 +9,7 @@ This code is based on code of "Risk Sensitive Sequential Action Control" (MIT Li
 </p>
 
 ## Installation
-Tested on Julia 1.8.5 & Python 3.6   
+Tested on Julia 1.7.3 & Python 3.6   
 This is summary for installing all submodules and dependencies.
 
 ### Cloning
@@ -69,8 +69,8 @@ For example, if you want to test CrowdNav with pedestrian dataset, you should ch
 
 ## Install Julia
 We can install Julia from [official webpage](https://julialang.org/downloads/).  
-Note that this module is tested with Julia 1.8.5  
-You may want to install julia within your conda environment and it is possible. However, installing julia within conda env is not tested.  
+Note that this module is tested with Julia 1.7.3  
+You may want to install julia within your conda environment but it is not necessary.
 
 Julia can call python function using PyCall. Our integration with Trajectron++ and CrowdNav is achieved through PyCall.  
 If you open notebook file in editor after activating conda environment, it will automatically detect python version in conda and use it for PyCall.  
@@ -80,6 +80,5 @@ Plot.jl now doesn't support matplotlib < 3.4.0
 Since python 3.6 does not support matplotlib >= 3.4.0, we had to go around this compatability issue.   
 One temporary solution is save result data in corrent conda environment and plot in other conda environment with newer matplotlib.  
 
-1. Save result data as jld2 file
-2. Create another conda environment with python >= 3.7 and matplotlib >= 3.4.0
-3. Open load_data.ipynb with this conda environment and plot the result
+1. Save prediction and robot history data to csv file
+2. Open python_plot.ipynb to load the data in python and make gif
