@@ -33,8 +33,10 @@ end
 
 function CrowdNavController(sim_param::SimulationParameter,
                             cnt_param::CrowdNavControlParameter)
+
     rl_robot = py"configure_rl_robot"(cnt_param.model_dir, cnt_param.env_config,
                                       cnt_param.policy_config, cnt_param.policy_name);
+    println(policy_config)
     @assert rl_robot.visible == false "RL Robot has to be invisible."
     @assert rl_robot.time_step == sim_param.dto "RL Robot has to use the same timestep as sim_param.dto."
     rl_robot.v_pref = cnt_param.target_speed;

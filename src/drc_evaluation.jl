@@ -50,12 +50,15 @@ function evaluate(scene_loader::SceneLoader,
                   target_speed::Float64,
                   measurement_schedule::Vector{Time},
                   target_trajectory::Trajectory2D,
-                  pos_error_replan::Float64;
+                  pos_error_replan::Float64,        
+                  safety_distance::Float64,       
+                  max_MPC_iters::Int64,
+                  run_id::Int64;   
                   # ado_inputs_init::Union{Nothing, Dict{T, Vector{Float64}} where T <: Union{PyObject, String}}=nothing, # only needed for CrowdNavController
                   # nominal_control::Union{Nothing, Bool}=nothing, # determines if nominal control is used in RSSAC controller
                   ado_id_removed::Union{Nothing, String}=nothing, # determines if ado_id_removed is removed from scenes with TrajectronSceneLoader
                   predictor::Union{Nothing, GaussianPredictor}=nothing) # needs to feed in GaussianPredictor if BICController is used with SyntheticSceneLoader
-    # Assertions
+    # Assertions    
     if typeof(scene_loader) != TrajectronSceneLoader
         @assert isnothing(ado_id_removed)
     end
@@ -77,8 +80,11 @@ function evaluate(scene_loader::SceneLoader,
         prediction_dict_history = Vector{Union{Nothing, Dict{String, Array{Float64, 3}}}}();
         @assert istaskdone(controller.prediction_task)
     end
-    # Compute First Control
-    schedule_control_update!(controller, w_init, target_trajectory, log=log);
+    # Compute First Control        
+    schedule_control_update!(controller,
+                            w_init,target_trajectory,
+                            ego_pos_goal_vec,controller.sim_param.dtc,
+                            target_speed,safety_distance,max_MPC_iters)
     last_control_update_time = w_init.t;
     wait(controller.control_update_task);
     push!(w_history, w_init);
@@ -102,8 +108,12 @@ function evaluate(scene_loader::SceneLoader,
 
     # computation time list
     comp_time_list = [];
-    while w_history[end].t <= sim_end_time
+    # last_u = isempty(u_history) ? zeros(Float64,2) : u_history[end]
+
+    while w_history[end].t <= sim_end_time  && !controller.Goal_reached
+    # while w_history[end].t <= sim_end_time
         current_time = w_history[end].t;
+        current_sec = round(to_sec(current_time), digits=1) 
         if current_time == measurement_schedule[m_time_idx]
             # Get new measurement
             msg_1 = "New measurement is obtained."
@@ -124,7 +134,7 @@ function evaluate(scene_loader::SceneLoader,
             end
             # Starting timer to keep track of computation time
             process_start_time = time();
-            if current_time < sim_end_time
+            if current_time < sim_end_time 
                 if typeof(controller) == DRCController
                     # Schedule prediction
                     previous_ado_pos_dict = deepcopy(w_history[end].ap_dict);
@@ -132,12 +142,16 @@ function evaluate(scene_loader::SceneLoader,
                     push!(log, (current_time, msg_2))
                     if typeof(controller.predictor) == TrajectronPredictor &&
                             controller.predictor.param.use_robot_future
-                        schedule_prediction!(controller, ado_inputs, previous_ado_pos_dict,
-                                                w_history[end].e_state);
+                        # schedule_prediction!(controller, ado_inputs, previous_ado_pos_dict,
+                        #                         w_history[end].e_state);
+                        schedule_prediction_idx!(controller, ado_inputs, previous_ado_pos_dict,
+                                                w_history[end].e_state,current_sec,run_id);
                     elseif typeof(controller.predictor) == TrajectronPredictor
-                        schedule_prediction!(controller, ado_inputs);
+                        # schedule_prediction!(controller, ado_inputs);
+                        schedule_prediction_idx!(controller, ado_inputs,current_sec,run_id);
                     else
-                        schedule_prediction!(controller, ado_positions, previous_ado_pos_dict);
+                        # schedule_prediction!(controller, ado_positions, previous_ado_pos_dict);
+                        schedule_prediction_idx!(controller, ado_positions, previous_ado_pos_dict,current_sec,run_id);
                     end
                     prediction_dict_history[end] = get_clipped_prediction_dict(controller.prediction_dict,
                                                                                 controller.sim_param.num_samples);
@@ -154,16 +168,26 @@ function evaluate(scene_loader::SceneLoader,
         end
 
         # Proceed further
-        if current_time < sim_end_time
+        if current_time < sim_end_time 
             if to_sec(current_time) ≈ to_sec(last_control_update_time) + controller.cnt_param.dtr;
                 # Schedule control update
-                schedule_control_update!(controller, w_history[end], target_trajectory, log=log);
+                # schedule_control_update!(controller, w_history[end], target_trajectory, log=log);
+                schedule_control_update!(controller,
+                            w_history[end],target_trajectory,
+                            ego_pos_goal_vec,controller.sim_param.dtc,
+                            target_speed,safety_distance,max_MPC_iters,log=log)
                 last_control_update_time = w_history[end].t
                 wait(controller.control_update_task);
             end
             # Get control for current_time
             u = control!(controller, current_time, log)
+            # println("Control output at time $current_time: u = $(u)")  
             # Stop timer and measure computation time so far in this iteration.
+          
+            # println("Current Position: $(get_position(w_history[end].e_state))")
+            # println("Goal Position: $(ego_pos_goal_vec)")
+            # println("Error Vector: $(get_position(w_history[end].e_state) - ego_pos_goal_vec)")
+
             elapsed = time() - process_start_time;
             push!(comp_time_list, elapsed);
             prediction_dict_history[end] = get_clipped_prediction_dict(controller.prediction_dict,
@@ -177,18 +201,25 @@ function evaluate(scene_loader::SceneLoader,
             total_control_cost +=
                 instant_control_cost(u, controller.sim_param.cost_param)*
                 controller.sim_param.dtc;
+            
             for ap in values(w_history[end].ap_dict)
                 total_collision_cost +=
                     instant_collision_cost(w_history[end].e_state, ap,
                                            controller.sim_param.cost_param)*
                     controller.sim_param.dtc;
-                total_collision += check_collision(w_history[end].e_state, ap, controller.sim_param.cost_param);
+                total_collision += check_collision(w_history[end].e_state, ap, controller.sim_param.cost_param,u);
+                # total_collision += check_collision(w_history[end].e_state, ap, controller.sim_param.cost_param);
             end
 
             # Ego transition for next timestep
             e_state_new = transition(w_history[end].e_state, u, controller.sim_param.dtc);
             w_new = WorldState(e_state_new, deepcopy(w_history[end].ap_dict),
                                w_history[end].t_last_m);
+            # Check if goal is reached
+            if norm(get_position(e_state_new) - ego_pos_goal_vec) < controller.cnt_param.tol_goal
+                println("Goal reached at:",current_time)
+                controller.Goal_reached = true
+            end
 
             push!(u_history, u);
             push!(w_history, w_new);
@@ -216,7 +247,8 @@ function evaluate(scene_loader::SceneLoader,
         total_collision_cost +=
             terminal_collision_cost(w_history[end].e_state, ap,
                                     controller.sim_param.cost_param);
-        total_collision += check_collision(w_history[end].e_state, ap, controller.sim_param.cost_param);
+        total_collision += check_collision(w_history[end].e_state, ap, controller.sim_param.cost_param,u_history[end]);
+        # total_collision += check_collision(w_history[end].e_state, ap, controller.sim_param.cost_param);
     end
 
     # Finish All the Remaining Tasks
@@ -251,6 +283,6 @@ function evaluate(scene_loader::SceneLoader,
 
     println("Average computation time: ", mean(comp_time_list))
     println("std of computation time: ", std(comp_time_list))
-    println("List of computation time: ", comp_time_list)
-    return eval_result, controller, ado_positions
+    #println("List of computation time: ", comp_time_list)
+    return eval_result, controller, ado_positions, comp_time_list
 end

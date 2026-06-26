@@ -85,7 +85,7 @@ function TrajectronSceneLoader(param::TrajectronSceneParameter;
         for string in log
             println(string)
         end
-        println("Looking at the $(param.test_data_name) sequence, data_id $(param.test_scene_id), start_idx $(curr_time_idx)");
+        println("Looking at the $(param.test_data_name) sequence, data_id $(param.test_scene_id), start_idx $(curr_time_idx),curr_time_idx $(max_time_idx)");
     end
     return TrajectronSceneLoader(param, model_dir, eval_env, eval_scene, online_scene,
                                  state_def, dto, curr_time_idx, max_time_idx)

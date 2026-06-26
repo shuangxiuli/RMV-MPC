@@ -1,8 +1,26 @@
 env_trajectron++/**
-notebook/.ipynb_checkpoints/**
-data
-.ipynb_checkpoints/**
+data/
 .idea/**
 simulation_data/**
+
+# Notebook and experiment byproducts
+.ipynb_checkpoints/
+notebook/.ipynb_checkpoints/
+*.jld2
+*.gif
+
+# Local analysis outputs
+visualizations/
+figures/
+notebook/hotel_005/
+notebook/hotel_006/
+notebook/
+
+# Scratch and backups
+notebook/code bk/
+notebook/data-bk/
+notebook/experiment_results-bk/
+src/bk/
+
+# Generated tabular outputs
 *.csv
-.jld2

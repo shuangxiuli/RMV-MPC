@@ -1,84 +1,125 @@
-# DistributionallyRobust.jl
+# RMV-MPC
 
-This is official code repository of "Distributionally Robust Risk-Aware Control Framework for Safe Crowd Navigation with Human Motion Predictions".  
-This code is based on code of "Risk Sensitive Sequential Action Control" (MIT License) [RSSAC code](https://github.com/StanfordMSL/RiskSensitiveSAC.jl).
+Official code release for the RMV-MPC method in our IROS paper on robot navigation under uncertainty.
 
-<p align="center">
-    <img src="./notebook/DRCC-MPC_eth.gif" alt="DRCC-MPC example in eth dataset" style="width: 400px;"/>
-    <img src="./notebook/DRCC-MPC_hotel.gif" alt="DRCC-MPC example in hotel dataset" style="width: 400px;"/>
-</p>
+This repository is derived from [labicon/DRCC-MPC](https://github.com/labicon/DRCC-MPC) and retains the original third-party integrations needed for reproduction, including Trajectron++, CrowdNav, and Python-RVO2 through git submodules.
 
-## Installation
-Tested on Julia 1.7.3 & Python 3.6   
-This is summary for installing all submodules and dependencies.
+## Scope
 
-### Cloning
-Clone the submodules when cloning this repository. Submodules included in this repository is   
-- Trajectron-plus-plus
-- CrowdNav
-- Python-RVO2
+This public release is organized as a reproducible research codebase rather than a polished software package. The main contents are:
 
+- Julia source for the RMV-MPC controller and evaluation pipeline
+- Example notebooks for the paper experiments
+- Parameter setup scripts and test cases
+- Git submodule links for third-party dependencies
+
+## Environment
+
+Tested environment:
+
+- Ubuntu 20.04 (WSL2 is acceptable)
+- ROS Noetic
+- Julia 1.7.3
+- Conda Python 3.6 environment for Trajectron++ and CrowdNav
+
+## Clone
+
+Clone with submodules:
+
+```bash
+git clone --recurse-submodules <your-repo-url>
+cd RMV-MPC
 ```
-git clone --recurse-submodules <repository cloning URL>
+
+If you already cloned without submodules:
+
+```bash
+git submodule update --init --recursive
 ```
 
-### Environment Setup
-Since Trajectron-plus-plus module is based on python 3.6, which is bit outdated, we recommend to use conda environment for environment setup.   
-First, create conda environment and install dependencies for Trajectron++.  
+## Python environment
+
+Trajectron++ depends on Python 3.6 in this codebase.
+
+```bash
+conda create -n rmvmpc python=3.6 -y
+conda activate rmvmpc
 ```
-conda create --name [your conda environment name] python=3.6 -y
-conda activate [your conda environment name]
+
+Install Trajectron++ dependencies:
+
+```bash
 cd Trajectron-plus-plus
 pip install -r requirements.txt
 ```
 
-We have to install Python-RVO2 library to install CrowdNav.  
-We can start with installing CMake and Cython.  
-Install the tested version of Cython for Python-RVO2.   
-```
+Install Python-RVO2:
+
+```bash
 cd ../Python-RVO2
 pip install -r requirements.txt
-```
-Build and install.  
-```
 python setup.py build
 python setup.py install
 ```
 
-If Python-RVO2 is installed successfully, we can install CrowdNav.  
-```
+Install CrowdNav:
+
+```bash
 cd ../CrowdNav
 pip install -e .
 ```
 
-## Submodule Training
+## Julia environment
 
-### Trajectron++
-We have to get trained Trajectron++ module for our DRCC-MPC.  
-Training procedure for Trajectron++ is givn in its [repository](https://github.com/StanfordASL/Trajectron-plus-plus?tab=readme-ov-file#installation).   
-We are only working with Pedestrian Dataset in here.  
+From the repository root:
 
-### Load trained Trajectron++ module
-You can access to pretrained Trajectron++ module in [RSSAC repository](https://github.com/StanfordMSL/RiskSensitiveSAC.jl/tree/master).   
-They are under `Trajectron-plus-plus/experiments/pedestrians/models`. Download trained model and put it in same directory to use the model.  
+```bash
+julia --project=.
+```
 
-### CrowdNav
-You can also follow the [CrowdNav training procedure](https://github.com/vita-epfl/CrowdNav/tree/20d678085c06831e658a65b9e20c8bb6f6ecdc10).   
-However, it is not necessary if you are not planning to to experiments with CrowdNav. You may have to change training configuration in `crowd_nav/configs`.   
-For example, if you want to test CrowdNav with pedestrian dataset, you should change `time_step = 0.4` in `env.config` to comply with dataset timestep.
+Then instantiate the Julia environment:
 
-## Install Julia
-We can install Julia from [official webpage](https://julialang.org/downloads/).  
-Note that this module is tested with Julia 1.7.3  
-You may want to install julia within your conda environment but it is not necessary.
+```julia
+using Pkg
+Pkg.instantiate()
+```
 
-Julia can call python function using PyCall. Our integration with Trajectron++ and CrowdNav is achieved through PyCall.  
-If you open notebook file in editor after activating conda environment, it will automatically detect python version in conda and use it for PyCall.  
+## Models and datasets
 
-## Compatability issue
-Plot.jl now doesn't support matplotlib < 3.4.0    
-Since python 3.6 does not support matplotlib >= 3.4.0, we had to go around this compatability issue.   
-One temporary solution is save result data in corrent conda environment and plot in other conda environment with newer matplotlib.  
+This repository does not assume that all pretrained models or processed datasets can be redistributed here.
 
-1. Save prediction and robot history data to csv file
-2. Open python_plot.ipynb to load the data in python and make gif
+You may need to place the following assets manually in the paths expected by the notebooks and scripts:
+
+- processed Trajectron++ pedestrian datasets under `Trajectron-plus-plus/experiments/processed/`
+- pretrained Trajectron++ checkpoints under `Trajectron-plus-plus/experiments/pedestrians/models/`
+- any additional CrowdNav model files used by the corresponding example notebooks
+
+## Main entry points
+
+Primary example notebooks are under `notebook/`:
+
+- `Eval_Example_1_Synthetic_Gaussian.ipynb`
+- `Eval_Example_2_Data_Trajectron.ipynb`
+- `Eval_Example_3_Data_Gaussian.ipynb`
+- `Eval_Example_4_Data_Oracle.ipynb`
+- `Eval_Example_5_BIC_Synthetic.ipynb`
+- `Eval_Example_6_BIC_Data.ipynb`
+- `Eval_Example_7_Data_Extensive_Search.ipynb`
+- `Eval_Example_8_CrowdNav_Data.ipynb`
+- `Eval_Example_9_DRC_Data_Trajectron.ipynb`
+
+## Acknowledgement
+
+This repository builds on:
+
+- `labicon/DRCC-MPC`
+- `StanfordMSL/RiskSensitiveSAC.jl`
+- `StanfordASL/Trajectron-plus-plus`
+- `vita-epfl/CrowdNav`
+- `sybrenstuvel/Python-RVO2`
+
+Please preserve their licenses and citations when reusing this code.
+
+## License
+
+This repository remains under the MIT License. See `LICENSE`.

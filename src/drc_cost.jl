@@ -52,13 +52,36 @@ function instant_collision_cost(e_state::Union{RobotState, UnicycleState},
     return collision_cost
 end
 
-# # Check Collision
+# Check Collision
 function check_collision(e_state::Union{RobotState, UnicycleState},
                             apvec::Vector{Float64},
                             param::DRCCostParameter)
+                            # u::Vector{Float64})
     @assert length(apvec) == 2 "Invalid ado state dimension!"
+    # if norm(get_position(e_state) - apvec) < param.human_size && u != [0.0, 0.0]
     if norm(get_position(e_state) - apvec) < param.human_size
         collision = 1
+        println("get collision at:", e_state.t)
+    else
+        collision = 0
+    end
+    return collision
+end
+
+function check_collision(e_state::Union{RobotState, UnicycleState},
+                            apvec::Vector{Float64},
+                            param::DRCCostParameter,
+                            u::Vector{Float64})
+    @assert length(apvec) == 2 "Invalid ado state dimension!"
+    # println("grounduuuuuuuuuuuuuu",apvec)
+    if norm(get_position(e_state) - apvec) < param.human_size && u != [0.0, 0.0]
+    # if norm(get_position(e_state) - apvec) < param.human_size
+        collision = 1
+        println("get collision at:", e_state.t)
+        println("ado position:", apvec)
+        println("edo position:", get_position(e_state))
+        println("distance:", norm(get_position(e_state) - apvec))
+        println("u:", u)
     else
         collision = 0
     end

@@ -171,6 +171,14 @@ function evaluate(scene_loader::SceneLoader,
                     delete!(ado_positions, key_to_remove)
                     delete!(ado_inputs, key_to_remove)
                 end
+            elseif typeof(scene_loader) == SyntheticSceneLoader #lsx
+                if typeof(controller) == RSSACController
+                    ado_positions = fetch_ado_positions!(scene_loader, controller.prediction_dict);
+                else
+                    prediction_dict = sample_future_ado_positions!(predictor,
+                                                                   w_history[end].ap_dict);
+                    ado_positions = fetch_ado_positions!(scene_loader, prediction_dict);
+                end#lsx
             end
             # Starting timer to keep track of computation time
             process_start_time = time();

@@ -65,6 +65,7 @@ function init_condition_setup(;# Ego Initial Conditions
         ego_vel_init_vec = (ego_pos_goal_vec - ego_pos_init_vec[1:2])./
                            norm(ego_pos_goal_vec - ego_pos_init_vec[1:2]);
     end
+    
     ego_state_init_vec = vcat(ego_pos_init_vec, ego_vel_init_vec);
     if length(ego_state_init_vec) == 4
         e_init = RobotState(ego_state_init_vec, t_init);
@@ -104,10 +105,12 @@ function controller_setup(# Scene Loader parameters
                             cnt_param::DRCControlParameter,
                             # Simulation Parameters
                             dtc::Float64,
+                            run_id::Int64,
                             # Ego Initial Conditions
                             ego_pos_init_vec::Union{Nothing, Vector{Float64}}=nothing,
                             ego_vel_init_vec::Union{Nothing, Vector{Float64}}=nothing,
-                            ego_pos_goal_vec::Union{Nothing, Vector{Float64}}=nothing,
+                            # ego_pos_goal_vec::Union{Nothing, Vector{Float64}}=nothing,
+                            ego_pos_goal_vec::Vector{Float64},#lsx
                             t_init::Time=Time(0.0),
                             # Other Parameters
                             target_speed::Union{Nothing, Float64}=nothing,
@@ -205,7 +208,8 @@ function controller_setup(# Scene Loader parameters
     if predictor.param.use_robot_future
         schedule_prediction!(controller, ado_inputs, w_init.e_state);
     else
-        schedule_prediction!(controller, ado_inputs);
+        # schedule_prediction!(controller, ado_inputs);
+        schedule_prediction!(controller, ado_inputs,run_id);
     end
     wait(controller.prediction_task);
 

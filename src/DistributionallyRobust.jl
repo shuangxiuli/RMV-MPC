@@ -2,8 +2,8 @@
 #// File Name: DistributionallyRobust.jl
 #// Author: Kanghyun Ryu (kr37@illinois.edu)
 #// Date Created: 2023/03/30
-#// Description: Julia package for Distributionally Robust 
-#// Control, with public version of Trajectron++
+#// Description: Legacy internal Julia module for the public RMV-MPC release 
+#// Compatibility is preserved to avoid breaking existing notebooks and scripts
 #///////////////////////////////////////
 
 module DistributionallyRobust
@@ -20,7 +20,7 @@ using Distributions
 using ForwardDiff
 using LinearAlgebra
 using Plots
-pyplot();
+#pyplot();lsx
 using Printf
 using ProgressMeter
 using PyCall
@@ -280,6 +280,7 @@ include("scene_loader.jl")
 export
     initialize_scene_graph!,
     sample_future_ado_positions!,
+    sample_future_ado_positions_times!,
     Predictor,
     TrajectronPredictorParameter,
     TrajectronPredictor,
@@ -317,17 +318,12 @@ export
     control!,
     adjust_old_prediction!,
     schedule_prediction!,
+    schedule_prediction_idx!,
     schedule_control_update!,
     drc_control_update!,
-    get_action!,
-    cem_optimization!,
-    get_mean_cov,
-    compute_cost_CvaR,
-    compute_cost,
-    compute_CVaR,
-    compute_CVaR_array,
-    compute_CVaR_array_gpu,
-    kernel_CVaR!,
+    simulate_straight_motion,
+    run_MPC!,
+    ccp_solver,
     get_robot_present_and_future,
     DRCControlParameter
 include("distributionally_robust_controller.jl")

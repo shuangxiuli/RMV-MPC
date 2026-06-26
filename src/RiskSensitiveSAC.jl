@@ -20,7 +20,7 @@ using Distributions
 using ForwardDiff
 using LinearAlgebra
 using Plots
-pyplot();
+#pyplot();lsx
 using Printf
 using ProgressMeter
 using PyCall
@@ -190,6 +190,12 @@ function __init__()
                            policy_name='sarl'):
         env_config_file = os.path.join(model_dir, os.path.basename(env_config_path))
         policy_config_file = os.path.join(model_dir, os.path.basename(policy_config_path))
+
+        # print(f"Policy Config File: {policy_config_file}")
+        # if not os.path.exists(policy_config_file):
+        #     raise FileNotFoundError(f"Policy config file not found: {policy_config_file}")lsx
+
+
         model_weights = os.path.join(model_dir, 'rl_model.pth')
         device = torch.device('cpu')
 
@@ -197,6 +203,9 @@ function __init__()
         policy = policy_factory[policy_name]()
         policy_config = configparser.RawConfigParser()
         policy_config.read(policy_config_file)
+        # print("Available Sections in Policy Config File:", policy_config.sections())
+        # if not policy_config.has_section('rl'):
+        #     raise ValueError("Policy config file is missing the 'rl' section.")lsx
         policy.configure(policy_config)
         if policy.trainable:
             policy.get_model().load_state_dict(torch.load(model_weights))

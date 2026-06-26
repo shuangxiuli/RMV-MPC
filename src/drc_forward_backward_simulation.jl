@@ -310,6 +310,7 @@ function compute_costs(ex_array_gpu::CuArray{Float32, 3},
                        u_array_gpu::CuArray{Float32, 3},
                        target_pos_array_gpu::CuArray{Float32, 2},
                        cost_param::DRCCostParameter)
+    
     if name(CuDevice(0)) == "NVIDIA GeForce RTX 3060"
         # Instataneous costs
         inst_cnt_cost_array_gpu = instant_control_cost(u_array_gpu, cost_param, threads=(16, 64));
@@ -351,6 +352,7 @@ function integrate_costs(cost_result::SimulationCostResult,
         c_idx = size(cost_result.inst_cnt_cost_array_gpu, 2);
     end
     discount_factor = cumprod(0.9*ones(c_idx));
+    # discount_factor = cumprod(0.618*ones(c_idx));
     # control cost
     cnt_cost_array = Float64.(collect(cost_result.inst_cnt_cost_array_gpu[:, 1:c_idx]));
     cnt_cost_per_control = cnt_cost_array*discount_factor .* sim_param.dtc;

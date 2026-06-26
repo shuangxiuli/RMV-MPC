@@ -1,7 +1,7 @@
 #///////////////////////////////////////
-#// File Name: distributionally_robust_controller.jl
-#// Author: Kanghyun Ryu (kr37@illinois.edu)
-#// Date Created: 2023/04/01
+#// File Name: distributionally_robust_convace_controller.jl
+#// Author: shuangxiu Li (kr37@illinois.edu)
+#// Date Created: 2025/04/13
 #// Description: Distributionally Robust Controller
 #///////////////////////////////////////
 
@@ -13,6 +13,13 @@ using RobotOS
 import Convex: Variable, norm, quadform, minimize, dot, solve!
 using ECOS
 using Statistics
+using DataFrames
+using LinearAlgebra
+using PyCall
+using JuMP
+using Interpolations
+using JLD2
+
 
 struct DRCControlParameter <: Parameter
     eamax::Float64  # Maximum abolute value of acceleration
@@ -21,48 +28,47 @@ struct DRCControlParameter <: Parameter
     dtr::Float64 # Replanning time interval
     dtc::Float64 # Euler integration time interval
 
-    horizon::Int64 # Planning horizon
+    horizon::Int64 # Planning horizon    
     discount::Float64 # Discount factor
 
     human_size::Float64 # Human size
 
-    cem_init_mean::Vector{Float64}
-    cem_init_cov::Matrix{Float64}
-    cem_init_num_samples::Int64
-    cem_init_num_elites::Int64
-    cem_init_alpha::Float64
-    cem_init_iterations::Int64
-
     epsilon::Float64 # Risk-sensitiveness parameter
+
+    safety_distance::Float64
+
+    max_ccp_iters::Int
+    tol_ccp::Float64
+    tol_goal::Float64
 
     function DRCControlParameter(eamax::Float64, tcalc::Float64, 
                                 goal_pos::Vector{Float64}, dtr::Float64, dtc::Float64,
                                 horizon::Int64,
                                 discount::Float64,
-                                human_size::Float64,
-                                cem_init_mean::Vector{Float64},
-                                cem_init_cov::Matrix{Float64},
-                                cem_init_num_samples::Int64,
-                                cem_init_num_elites::Int64,
-                                cem_init_alpha::Float64,
-                                cem_init_iterations::Int64,
-                                epsilon::Float64)
+                                human_size::Float64,                                
+                                epsilon::Float64,
+                                safety_distance::Float64,
+                                max_ccp_iters::Int,
+                                tol_ccp::Float64,
+                                tol_goal::Float64)
         @assert eamax > 0.0 "eamax must be positive."
         @assert tcalc > 0.0 "tcalc must be positive."
         @assert dtr > 0.0 "dtr must be positive."
         @assert length(goal_pos) == 2 "goal_pos must be a 2D vector."
         return new(eamax, tcalc, goal_pos, dtr, dtc, horizon, discount, human_size,
-                    cem_init_mean, cem_init_cov,
-                    cem_init_num_samples, cem_init_num_elites, cem_init_alpha,
-                    cem_init_iterations, epsilon)
+                    epsilon,safety_distance,max_ccp_iters,tol_ccp,tol_goal)
     end
 end
 
+const CCPProfileRecord = NamedTuple{(:tcalc_actual, :ccp_iters,:status), Tuple{Float64, Int,String}}
 mutable struct DRCController
     sim_param::SimulationParameter
     cnt_param::DRCControlParameter
     predictor::Predictor
     cost_param::DRCCostParameter
+
+    schedule_position::Union{Nothing, DataFrame}
+    schedule_control::Union{Nothing, DataFrame}
 
     prediction_dict::Union{Nothing, Dict{String, Array{Float64, 3}}}
     sim_result::Union{Nothing, SimulationResult}
@@ -78,14 +84,22 @@ mutable struct DRCController
     u_value::Union{Nothing, Vector{Float64}}
 
     previous_cnt_plan::Union{Nothing, Array{Float64, 2}}
+
+    Goal_reached::Bool 
+    ccp_profile::Vector{CCPProfileRecord}
 end
 
 function DRCController(sim_param::SimulationParameter,
                         cnt_param::DRCControlParameter,
                         predictor::Predictor,
                         cost_param::DRCCostParameter)
+
+    ccp_profile = CCPProfileRecord[]
+    sizehint!(ccp_profile, 10_000)
+
     return DRCController(sim_param, cnt_param, predictor, cost_param, nothing, nothing, nothing,
-                        nothing, nothing, nothing, nothing, nothing, nothing, nothing, nothing)
+                        nothing, nothing, nothing, nothing, nothing, nothing, nothing, nothing, nothing, nothing,false,
+                         ccp_profile)
 end
 
 # main control functions below
@@ -161,12 +175,14 @@ end
 
 function schedule_prediction!(controller::DRCController,
                                 ado_pos_dict::Dict,
+                                run_id::Int64,
                                 previous_ado_pos_dict::Union{Nothing, Dict{String, Vector{Float64}}}=nothing,
                                 e_init::Union{Nothing, RobotState}=nothing);
     if !isnothing(previous_ado_pos_dict)
         adjust_old_prediction!(controller, previous_ado_pos_dict,
                                 convert_nodes_to_str(reduce_to_positions(ado_pos_dict)));
     end
+    
     if typeof(controller.predictor) == TrajectronPredictor
         controller.prediction_task = @task begin
             if controller.predictor.param.use_robot_future
@@ -183,6 +199,13 @@ function schedule_prediction!(controller::DRCController,
                 sample_future_ado_positions!(controller.predictor,
                                                 ado_pos_dict,
                                                 robot_present_and_future);
+            # save_path = "./hotel_005/prediction_dict_tmp.jld2"
+            # jldsave(save_path; prediction_dict_tmp=controller.prediction_dict_tmp)
+            # @load "./hotel_005/prediction_dict_tmp.jld2" prediction_dict_tmp
+            # controller.prediction_dict_tmp = prediction_dict_tmp
+            # @load "./experiment_results/experiment_$(run_id)/prediction_dict_tmp.jld2" prediction_dict_tmp
+            # controller.prediction_dict_tmp = prediction_dict_tmp
+            # println("Loaded data: ", controller.prediction_dict_tmp) 
             if !controller.predictor.param.use_robot_future
                 num_controls = 1
                 # each value has to be (num_samples*num_controls, prediction_steps, 2) array
@@ -193,6 +216,71 @@ function schedule_prediction!(controller::DRCController,
                 end
             end
         end
+   
+    elseif typeof(controller.predictor) == GaussianPredictor || typeof(controller.predictor) == StopGaussianPredictor
+        controller.prediction_task = @task begin
+            controller.prediction_dict_tmp =
+                sample_future_ado_positions!(controller.predictor,
+                                             convert_nodes_to_str(ado_pos_dict));
+            num_controls = 1;
+            # each value has to be (num_samples*num_controls, prediction_steps, 2) array
+            for key in keys(controller.prediction_dict_tmp)
+                controller.prediction_dict_tmp[key] =
+                    repeat(controller.prediction_dict_tmp[key],
+                           outer=(num_controls, 1, 1));
+            end
+        end
+    else
+        @error "Type of controller.predictor: $(typeof(controller.predictor)) is not supported."
+    end
+    schedule(controller.prediction_task)
+end
+
+function schedule_prediction_idx!(controller::DRCController,
+                                ado_pos_dict::Dict,                                
+                                current_sec::Float64,
+                                run_id::Int64,
+                                previous_ado_pos_dict::Union{Nothing, Dict{String, Vector{Float64}}}=nothing,
+                                e_init::Union{Nothing, RobotState}=nothing);
+    if !isnothing(previous_ado_pos_dict)
+        adjust_old_prediction!(controller, previous_ado_pos_dict,
+                                convert_nodes_to_str(reduce_to_positions(ado_pos_dict)));
+    end
+
+    if typeof(controller.predictor) == TrajectronPredictor
+        controller.prediction_task = @task begin
+            if controller.predictor.param.use_robot_future
+                @assert !isnothing(e_init) "e_init must be given."
+                robot_present_and_future=
+                    get_robot_present_and_future(e_init,
+                                                controller.u_schedule,
+                                                controller.sim_param,
+                                                controller.cnt_param);
+            else
+                robot_present_and_future = nothing;
+            end
+            controller.prediction_dict_tmp = 
+                sample_future_ado_positions!(controller.predictor,
+                                                ado_pos_dict,
+                                                robot_present_and_future);
+            # save_path = "./hotel_005/prediction_dict_tmp_$current_sec.jld2"
+            # jldsave(save_path; prediction_dict_tmp=controller.prediction_dict_tmp)
+            # @load "./hotel_005/prediction_dict_tmp_$current_sec.jld2" prediction_dict_tmp
+            # controller.prediction_dict_tmp = prediction_dict_tmp
+            # @load "./experiment_results/experiment_$(run_id)/prediction_dict_tmp_$current_sec.jld2" prediction_dict_tmp
+            # controller.prediction_dict_tmp = prediction_dict_tmp
+            # println("Loaded data: ", controller.prediction_dict_tmp) 
+            if !controller.predictor.param.use_robot_future
+                num_controls = 1
+                # each value has to be (num_samples*num_controls, prediction_steps, 2) array
+                for key in keys(controller.prediction_dict_tmp)
+                    controller.prediction_dict_tmp[key] = 
+                        repeat(controller.prediction_dict_tmp[key],
+                                outer=(num_controls, 1, 1));
+                end
+            end
+        end
+   
     elseif typeof(controller.predictor) == GaussianPredictor || typeof(controller.predictor) == StopGaussianPredictor
         controller.prediction_task = @task begin
             controller.prediction_dict_tmp =
@@ -214,7 +302,12 @@ end
 
 function schedule_control_update!(controller::DRCController,
                                     w_init::WorldState,
-                                    target_trajectory::Trajectory2D;
+                                    target_trajectory::Trajectory2D,
+                                    ego_pos_goal_vec::Vector{Float64},
+                                    dtc::Float64,
+                                    target_speed::Float64, 
+                                    safety_distance::Float64,
+                                    max_MPC_iters::Int64;
                                     log::Union{Nothing, Vector{Tuple{Time, String}}}=nothing);
     if !isnothing(controller.prediction_task) &&
         istaskdone(controller.prediction_task)
@@ -222,6 +315,8 @@ function schedule_control_update!(controller::DRCController,
             msg = "New prediction is available to the controller."
             push!(log, (w_init.t, msg))
         end
+        # @load "./hotel_005/prediction_dict_history.jld2" prediction_dict_history
+        # controller.prediction_dict = prediction_dict_history
         controller.prediction_dict = copy(controller.prediction_dict_tmp);
         controller.prediction_task = nothing;
     end
@@ -231,10 +326,12 @@ function schedule_control_update!(controller::DRCController,
     end
 
     controller.control_update_task = @task begin
-        controller.tcalc_actual_tmp, controller.u_value_tmp = 
+        controller.tcalc_actual_tmp, controller.u_value_tmp,controller.Goal_reached = 
             drc_control_update!(controller, controller.cnt_param,
-                        controller.prediction_dict,
-                        w_init, target_trajectory);
+                        ego_pos_goal_vec,dtc,target_speed,
+                        controller.prediction_dict,w_init, 
+                        safety_distance,max_MPC_iters);
+
     end
     schedule(controller.control_update_task)
 end
@@ -242,11 +339,29 @@ end
 # helper functions below
 function drc_control_update!(controller::DRCController,
                                     cnt_param::DRCControlParameter,
+                                    ego_pos_goal_vec::Vector{Float64},
+                                    dtc::Float64,
+                                    target_speed::Float64, 
                                     prediction_dict::Dict{String, Array{Float64, 3}},
                                     w_init::WorldState,
-                                    target_trajectory::Trajectory2D)
+                                    safety_distance::Float64,
+                                    max_MPC_iters::Int64
+                                    )
+                                    
+    u = [0.0, 0.0]
+    Goal_reached = false
+    ccp_iters = 0
+    status = "MMMM"
+
     tcalc_actual = 
-        @elapsed u = get_action!(controller, cnt_param, prediction_dict, w_init, target_trajectory);
+        @elapsed u ,Goal_reached, ccp_iters,status = run_MPC!(controller,ego_pos_goal_vec,target_speed,
+                                dtc,prediction_dict,safety_distance,
+                                max_MPC_iters,cnt_param, w_init.e_state);
+
+    push!(controller.ccp_profile,
+      (tcalc_actual = tcalc_actual,
+       ccp_iters    = ccp_iters,
+       status       = String(status)))
 
     if tcalc_actual >= cnt_param.tcalc
         # tcalc actual has exceeded allowable computation time
@@ -254,431 +369,321 @@ function drc_control_update!(controller::DRCController,
         @warn "$(time) [sec]: DRC computation took $(round(tcalc_actual, digits=3)) [sec], which exceeds the maximum computation time allowed."
     end
 
-    return tcalc_actual, u
+    # u = [0.0, 0.0]
+    # println(u)
+
+    return tcalc_actual, u , Goal_reached
 end
 
-function get_action!(controller::DRCController,
-                    cnt_param::DRCControlParameter,
-                    prediction_dict::Dict{String, Array{Float64, 3}},
-                    w_init::WorldState,
-                    target_trajectory::Trajectory2D)
 
-    # compute mean & cov of human transitions
-    mean_dict, cov_dict = get_mean_cov(prediction_dict);
-
-    # CEM optimization 
-    u = cem_optimization!(controller, cnt_param, mean_dict, cov_dict, w_init, target_trajectory);
-    return u
-end
-
-function cem_optimization!(controller::DRCController,
-                                    cnt_param::DRCControlParameter,
-                                    prediction_mean_dict::Dict{String, Array{Float64, 2}},
-                                    prediction_cov_dict::Dict{String, Array{Float64, 3}},
-                                    w_init::WorldState,
-                                    target_trajectory::Trajectory2D)
-    # initialize control candidates
-    # if isnothing(controller.previous_cnt_plan)
-    #     dist_mean = [cnt_param.cem_init_mean for i in 1:cnt_param.horizon];
-    #     dist_var = [[1.0, 1.0] .* cnt_param.eamax^2 for i in 1:cnt_param.horizon];
-    # else
-    #     dist_mean = [vec(controller.previous_cnt_plan[i,:]) for i in 2:cnt_param.horizon];
-    #     push!(dist_mean, vec(controller.previous_cnt_plan[end,:]));
-    #     dist_var = [[1.0, 1.0] .* cnt_param.eamax^2 for i in 1:cnt_param.horizon];
-    # end
-    dist_mean = ones(cnt_param.horizon, 2) .* cnt_param.cem_init_mean';
-    dist_var = ones(cnt_param.horizon, 2) .* cnt_param.eamax^2;
-
-    for iteration in 1:cnt_param.cem_init_iterations
-        # sample control candidates
-        u_candidates = zeros(cnt_param.cem_init_num_samples + 1, cnt_param.horizon, 2);
-
-        for i in 1:cnt_param.horizon
-            lb_dist = dist_mean[i,:] .+ cnt_param.eamax;
-            ub_dist = cnt_param.eamax .- dist_mean[i,:];
-            dist_var[i,:] = min(min((lb_dist/2).^2, ((ub_dist/2).^2)), dist_var[i,:]);
-            u_candidates[1, i, :] = dist_mean[i,:]';
-            u_candidates[2:end, i, :] = sqrt.(dist_var[i,:])' .* rand(Normal(0.0, 1.0), (cnt_param.cem_init_num_samples, 2)) .+ dist_mean[i,:]';
+function simulate_straight_motion(e_init::RobotState,
+                            ego_pos_goal_vec::Vector{Float64}, 
+                            cnt_param::DRCControlParameter,
+                            target_speed::Float64, dtc::Float64)
+    # Calculate the vector from the starting point to the target and its magnitude.
+    start = e_init.x[1:2]
+    dir = ego_pos_goal_vec - start
+    norm_dir = norm(dir)
+    # If the two points coincide, return a zero vector; otherwise calculate the unit direction vector.
+    direction = norm_dir > 0 ? dir / norm_dir : [0.0, 0.0]
+    
+    # Compute the velocity vector based on the target speed.
+    velocity = direction * target_speed
+    
+    # Calculate the distance from the start to the target and the total time required for movement.
+    distance = norm( ego_pos_goal_vec - start)
+    # total_time = distance / target_speed
+    # n_steps = Int(ceil(total_time / dtc))
+    
+    # Initialize position tracking
+    x_positions = [start[1]]
+    y_positions = [start[2]]
+    
+    # Simulate linear motion
+    current_pos = copy(start)
+    for _ in 1:cnt_param.horizon
+        current_pos += velocity * dtc
+        # Check if the target position is reached or overshot to prevent overshooting
+        if norm(current_pos - start) >= distance
+            current_pos = ego_pos_goal_vec
+            push!(x_positions, current_pos[1])
+            push!(y_positions, current_pos[2])
+            break
         end
-        clamp!(u_candidates, -cnt_param.eamax, cnt_param.eamax)
-        # compute cost and CVaR for each control candidates
-        cost, CVaR_sum, CVaR_max = compute_cost_CVaR_gpu(u_candidates, cnt_param, controller.sim_param, target_trajectory,
-                                        prediction_mean_dict, prediction_cov_dict, w_init, controller.cost_param);
-        # remove samples which violates CVaR constraint
-        if all(CVaR_max .>= 0.0)
-            # if all samples violate CVaR constraints, then use the sample with the lowest CVaR
-            order = sortperm(CVaR_sum);
-            u_candidates = u_candidates[order,:,:];
-            if iteration == cnt_param.cem_init_iterations
-                # if this is the last iteration, then use the sample with the lowest CVaR
-                t = @sprintf "Time %.2f" round(to_sec(w_init.t), digits=5)
-                @warn "$(t) [sec]: All samples violate CVaR constraints."
-            end
-        else
-            # if some samples violate CVaR constraints, then remove them
-            u_candidates = u_candidates[CVaR_max .< 0.0,:,:];
-            cost = cost[CVaR_max .< 0.0];
-            # sort cost and find elite control candidates
-            order = sortperm(cost);
-            cost = cost[order];
-            u_candidates = u_candidates[order,:,:];
-        end
-
-        N_elite = min(cnt_param.cem_init_num_elites, size(u_candidates, 1));
-        elite_samples = u_candidates[1:N_elite,:,:];
-        
-        # update mean and var
-        new_mean = dropdims(mean(elite_samples, dims=1), dims=1);
-        new_var = dropdims(var(elite_samples, dims=1), dims=1);
-        dist_mean = cnt_param.cem_init_alpha * dist_mean .+ (1-cnt_param.cem_init_alpha) * new_mean;
-        dist_var = cnt_param.cem_init_alpha * dist_var .+ (1-cnt_param.cem_init_alpha) * new_var;
-        clamp!(dist_mean, -cnt_param.eamax, cnt_param.eamax)
-        controller.previous_cnt_plan = elite_samples[1,:,:];
+        push!(x_positions, current_pos[1])
+        push!(y_positions, current_pos[2])
     end
-
-    return controller.previous_cnt_plan[1,:]
+    
+    # Construct a DataFrame to record position and velocity.
+    schedule_position = DataFrame(x = x_positions, y = y_positions)
+    schedule_control = DataFrame(vx = fill(velocity[1], length(x_positions)),
+                            vy = fill(velocity[2], length(x_positions)))
+    
+    return schedule_position, schedule_control
 end
 
-# get mean and cov from prediction_dict
-function get_mean_cov(prediction_dict::Dict{String, Array{Float64, 3}})
+function run_MPC!(controller::DRCController,
+                        ego_pos_goal_vec::Vector{Float64}, 
+                        target_speed::Float64, 
+                        dtc::Float64,
+                        prediction_dict::Dict{String, Array{Float64, 3}},
+                        safety_distance::Float64,
+                        max_MPC_iters::Int64,
+                        cnt_param::DRCControlParameter,
+                        e_init::RobotState
+                        )
 
-    mean_dict = Dict{String, Array{Float64, 2}}();
-    cov_dict = Dict{String, Array{Float64, 3}}();
+    u_candidates = nothing     
+    
+    schedule_position, schedule_control = simulate_straight_motion(e_init,ego_pos_goal_vec,cnt_param,target_speed,dtc)
+    min_dist = Inf
+    min_key = nothing
+    Goal_reached = false
+    ccp_iters = 0
+    status="MM"
+
     for key in keys(prediction_dict)
         # Each trajectory is a (num_samples, num_predicted_timesteps, 2) array
-        traj = prediction_dict[key];
+        # traj = repeat(prediction_dict[key][1, :, :], inner=(4, 1))
+        # traj = prediction_dict[key][1, :, :]
         # get mean
-        mean_dict[key] = dropdims(mean(traj, dims=1), dims=1);
-        # get covariance
-        covariance = zeros(size(traj, 2), size(traj, 3), size(traj, 3));
-        for time_step in axes(traj, 2)
-            covariance[time_step, :, :] = cov(traj[:, time_step, :]);
-        end
-        cov_dict[key] = covariance;
-    end
+        agent_traj = dropdims(mean(prediction_dict[key], dims=1), dims=1)
+        agent_traj_repeat = repeat(agent_traj, inner=(2, 1)) #inner=(2, 1)
 
-    return mean_dict, cov_dict
-end
+        # dist = [ norm([schedule_position.x[i+1], schedule_position.y[i+1]] .- agent_traj_repeat[i,:])
+        #     for i in 1:(nrow(schedule_position)-1) ]
 
-function compute_cost_CVaR(u_candidates::Array{Float64, 3},
-                                cnt_param::DRCControlParameter,
-                                sim_param::SimulationParameter,
-                                target_trajectory::Trajectory2D,
-                                prediction_mean_dict::Dict{String, Array{Float64, 2}},
-                                prediction_cov_dict::Dict{String, Array{Float64, 3}},
-                                w_init::WorldState,
-                                cost_param::DRCCostParameter)
-    # compute cost and CVaR for each control candidates
-    cost = zeros(size(u_candidates, 1));
-    CVaR_sum = zeros(size(u_candidates, 1));
-    CVaR_max = zeros(size(u_candidates, 1));
-
-    # ratio between dto and dtc
-    pred_expansion_factor = Int64(sim_param.dto/cnt_param.dtc);
-    cnt_idx = Vector(1:cnt_param.horizon);
-    predict_idx = repeat(Vector(1:sim_param.prediction_steps), inner=pred_expansion_factor);
-
-    for i in 1:size(u_candidates, 1)
-        u = Vector{Vector{Float64}}(undef, cnt_param.horizon);
-        for j in 1:cnt_param.horizon
-            u[j] = u_candidates[i,j,:];
-        end
-        # forward simulation of inputs
-        sim_result = simulate_forward(w_init.e_state, u, sim_param);
-        # compute cost
-        cost[i] = compute_cost(sim_result[2:end], u, cost_param, cnt_param, cnt_idx, target_trajectory);
-        # compute CVaR
-        CVaR_sum[i], CVaR_max[i] = compute_CVaR(sim_result[2:end], w_init, cnt_param, prediction_mean_dict, prediction_cov_dict, predict_idx, pred_expansion_factor);
-    end
-
-    return cost, CVaR_sum, CVaR_max
-end
-
-function compute_cost_CVaR_gpu(u_candidates::Array{Float64, 3},
-                            cnt_param::DRCControlParameter,
-                            sim_param::SimulationParameter,
-                            target_trajectory::Trajectory2D,
-                            prediction_mean_dict::Dict{String, Array{Float64, 2}},
-                            prediction_cov_dict::Dict{String, Array{Float64, 3}},
-                            w_init::WorldState,
-                            cost_param::DRCCostParameter)
-
-    # ratio between dto and dtc
-    pred_expansion_factor = Int64(sim_param.dto/cnt_param.dtc);
-
-    # Process u_arrays
-    u_array_gpu = cu(u_candidates);
-
-    # ego state simulation
-    ex_array_gpu = simulate_forward(w_init.e_state, u_array_gpu, sim_param) # (num_candidate, total_timesteps, 4(pos + vel));
-    ex_array_cpu = collect(ex_array_gpu);
-
-    # get target_pos array
-    total_timestep = size(ex_array_gpu, 2);
-    target_pos_array = ones(total_timestep, 2) .* cost_param.ep_target'
-    # target_pos_array = get_target_pos_array(ex_array_gpu, w_init, target_trajectory, sim_param);
-    target_pos_array_gpu = cu(target_pos_array);
-
-    # compute cost
-    cost_result = compute_costs(ex_array_gpu, u_array_gpu, target_pos_array_gpu, cost_param);
-    cost = integrate_costs(cost_result, sim_param);
-
-    CVaR_sum, CVaR_max = compute_CVaR_array_gpu(ex_array_cpu[:, 2:end, 1:2], w_init, cnt_param, prediction_mean_dict, prediction_cov_dict, sim_param.prediction_steps, pred_expansion_factor);
-
-    return cost, CVaR_sum, CVaR_max
-end
-
-function compute_cost(sim_results::Vector{RobotState},
-                        u::Vector{Vector{Float64}},
-                        cost_param::DRCCostParameter,
-                        cnt_param::DRCControlParameter,
-                        cnt_idx::Vector{Int64},
-                        target_trajectory::Trajectory2D);
-    cost = 0.0;
-
-    for (horizon, i) in enumerate(cnt_idx)
-        cost += cnt_param.discount^horizon * instant_position_cost(sim_results[i], cost_param);
-        if i < length(sim_results)
-            cost += cnt_param.discount^horizon * instant_control_cost(u[i], cost_param);
+        dist = [ norm([schedule_position.x[1], schedule_position.y[1]] .- agent_traj_repeat[1,:]) ]
+        
+        current_min = minimum(dist)
+        if current_min < min_dist
+            min_dist = current_min
+            min_key = key                               
         end
     end
-    return cost
-end
+  
+    u_candidates,cvar,ccp_iters,status = ccp_solver(controller, cnt_param, e_init, 
+            ego_pos_goal_vec, min_key,prediction_dict) 
 
-function compute_CVaR_array(sim_result::Array{Float32, 3},
-                            w_init::WorldState,
-                            cnt_param::DRCControlParameter,
-                            prediction_mean_dict::Dict{String, Array{Float64, 2}},
-                            prediction_cov_dict::Dict{String, Array{Float64, 3}},
-                            prediction_steps::Int64,
-                            pred_expansion_factor::Int64);
 
-    current_ado_position_dict = w_init.ap_dict;
+    if norm(e_init.x[1:2] - ego_pos_goal_vec) < cnt_param.tol_goal
+        # println("Goal reached.")
+        Goal_reached = true
+        return u_candidates,Goal_reached,ccp_iters
+    end     
+    
+    return u_candidates,Goal_reached,ccp_iters,status
+end    
 
-    interpolated_pos_total = Array{Float64, 4}(undef, length(prediction_mean_dict), size(sim_result, 1), size(sim_result, 2), 2);
-    interpolated_cov_total = Array{Float64, 5}(undef, length(prediction_mean_dict), size(sim_result, 1), size(sim_result, 2), 2, 2);
+py"""
+import cvxpy as cp
+import numpy as np
+import types
+import sys
+import json
+import numpy as np
 
-    # get mean and cov
-    n_pedestrians = 0;
-    for key in keys(prediction_mean_dict)
-        n_pedestrians += 1;
+my_solver = types.ModuleType("my_solver")
+def ccp_solver(controller,
+                cnt_param,
+                e_init,
+                ego_pos_goal_vec,
+                min_key,
+                prediction_dict
+                # u_can
+                ):
+    # print("ccp_solver begins")                 
+    H = cnt_param.horizon
+    dtr = cnt_param.dtr
+    
+    eps = cnt_param.epsilon
+    tol_ccp = cnt_param.tol_ccp
+    max_ccp_iters = cnt_param.max_ccp_iters
 
-        current_pos = current_ado_position_dict[key]';
-        mean = prediction_mean_dict[key];
-        pos = vcat(current_pos, mean);
+    #     data = json.load(f)
+    #     sorted_keys = sorted(int(k) for k in data.keys())
+    #     Omega_dict = {k: np.array(data[str(k)], dtype=np.float64) for k in sorted_keys}    
 
-        interpolated_pos = Array{Float64, 2}(undef, size(sim_result, 2), 2);
-        for i in 1:size(sim_result, 2)-1
-            interpolate = (rem(i, pred_expansion_factor)/pred_expansion_factor)*pos[div(i, pred_expansion_factor)+2,:] + 
-                    (1-(rem(i, pred_expansion_factor)/pred_expansion_factor))*pos[div(i, pred_expansion_factor)+1,:];
-            interpolated_pos[i, :] = interpolate;
-        end
-        interpolated_pos[end, :] = pos[end, :];
-        interpolated_pos_total[n_pedestrians, :, :, :] = repeat(reshape(interpolated_pos, (1, size(interpolated_pos, 1), 2)), inner = (size(sim_result, 1), 1, 1));
+    # Omega_dict = {
+    # 0: np.array([[0.05305249689066898, -0.033585436770738865, 0.020502063938711432],
+    #              [-0.033585436770738865, 2.5165608803346435, -0.07789732044415604],
+    #              [0.020502063938711432, -0.07789732044415604, 1.0]], dtype=np.float64),
+    # 1: np.array([[0.13343459443676345, -0.05400297137104444, 0.030834357598716864],
+    #              [-0.05400297137104444, 2.591052562568116, -0.06382935768787813],
+    #              [0.030834357598716864, -0.06382935768787813, 1.0]], dtype=np.float64),
+    # } #hotel big
 
-        interpolated_cov = repeat(prediction_cov_dict[key], inner = (pred_expansion_factor, 1, 1));
-        interpolated_cov = reshape(interpolated_cov, (1, size(interpolated_cov)...));
-        interpolated_cov_total[n_pedestrians, :, :, :, :] = repeat(interpolated_cov, inner=(size(sim_result, 1), 1, 1, 1));
-    end
+    # Omega_dict = {
+    # 0: np.array([[0.05305249689066898, -0.033585436770738865, 0.020502063938711432],
+    #              [-0.033585436770738865, 2.5165608803346435, -0.07789732044415604],
+    #              [0.020502063938711432, -0.07789732044415604, 1.0]], dtype=np.float64),
+    # 1: np.array([[0.13343459443676345, -0.05400297137104444, 0.030834357598716864],
+    #              [-0.05400297137104444, 2.591052562568116, -0.06382935768787813],
+    #              [0.030834357598716864, -0.06382935768787813, 1.0]], dtype=np.float64),
+    # } #hotel small
 
-    sim_result_total = repeat(reshape(sim_result, (1, size(sim_result)...)), inner=(length(prediction_mean_dict), 1, 1, 1));
-    rel_vec = sim_result_total - interpolated_pos_total;
-    dist = sqrt.(rel_vec[:, :, :, 1].^2 + rel_vec[:, :, :, 2].^2) .- cnt_param.human_size;
+    # Omega_dict = {
+    # 0: np.array([[0.06138864184620789, 0.007803333543303356, -0.05187618507253536],
+    #              [0.007803333543303356, 0.04167727204986316, 0.013393944515501287],
+    #              [-0.05187618507253536, 0.013393944515501287, 1.0]], dtype=np.float64),
 
-    D_11 = 1 ./ dist.^2;
-    D_22 = 1/100.0^2 .* zeros(size(D_11));
+    # 1: np.array([[0.33900374138424507, 0.042791857636988465, -0.11068705870104643],
+    #              [0.042791857636988465, 0.13145250528365968, 0.02495215407073602],
+    #              [-0.11068705870104643, 0.02495215407073602, 1.0]], dtype=np.float64),
+    # } #eth
 
-    Q_11 = rel_vec[:, :, :, 1] ./ dist;
-    Q_12 = rel_vec[:, :, :, 2] ./ dist;
-    Q_21 = -rel_vec[:, :, :, 2] ./ dist;
-    Q_22 = rel_vec[:, :, :, 1] ./ dist;
+    Omega_dict = {
+    0: np.array([[0.04568054, 0.00630403, -0.00698583],
+                [0.006304031, 0.02551584, 0.00411031],
+                [-0.00698583, 0.00411031, 1.0]], dtype=np.float64),
 
-    E_11 = Q_11.^2 .* D_11 + Q_12.^2 .* D_22;
-    E_12 = Q_11 .* Q_21 .* D_11 + Q_12 .* Q_22 .* D_22;
-    E_21 = Q_21 .* Q_11 .* D_11 + Q_22 .* Q_12 .* D_22;
-    E_22 = Q_21.^2 .* D_11 + Q_22.^2 .* D_22;
+    1: np.array([[0.26007000, 0.03852235, -0.02149290],
+                [0.03852235, 0.17087832, 0.020083393],
+                [-0.02149290, 0.020083393, 1.0]], dtype=np.float64),
+    } #eth
 
-    tr_cov_E = interpolated_cov_total[:, :, :, 1, 1] .* E_11 + interpolated_cov_total[:, :, :, 1, 2] .* E_21 + 
-                interpolated_cov_total[:, :, :, 2, 1] .* E_12 + interpolated_cov_total[:, :, :, 2, 2] .* E_22;
 
-    CVaR_key = -1.0 .+ 1/cnt_param.epsilon .* tr_cov_E;
-    CVaR_key[dist .<= 0.0] .= 1.0;
-    CVaR = dropdims(maximum(CVaR_key, dims=1), dims=1);
+    # for k, v in Omega_dict.items():
+    #     print(k, v)
 
-    max_CVaR = dropdims(maximum(CVaR, dims=2), dims=2);
-    discount_factor = cumprod(0.9*ones(size(sim_result, 2)));
-    sum_CVaR = CVaR * discount_factor;
 
-    return sum_CVaR, max_CVaR
-end
+    ado_traj = prediction_dict[min_key][0,:,:]    #The first prediction trajectory is arranged in time  
+    pred_data = np.repeat(ado_traj, repeats=2, axis=0)  #repeats=2
 
-function compute_CVaR_array_gpu(sim_result::Array{Float32, 3},
-                            w_init::WorldState,
-                            cnt_param::DRCControlParameter,
-                            prediction_mean_dict::Dict{String, Array{Float64, 2}},
-                            prediction_cov_dict::Dict{String, Array{Float64, 3}},
-                            prediction_steps::Int64,
-                            pred_expansion_factor::Int64,
-                            threads::NTuple{3, Int}=(4, 16, 8));
+    # Initial g_val calculation: initial guess using u_r = [0.0, 0.5] (modify if needed)
+    start = np.asarray(list(e_init.x))[:2]
+    
+    # initial_g = start + np.array([0.0, 0.0]) * dtr - ado_traj[0]
+    # initial_g = start + np.array([0.0, 0.5]) * dtr - ado_traj[0]
 
-    current_ado_position_dict = w_init.ap_dict;
+    # initial_g = start + u_can* dtr - ado_traj[0] 
+    # initial_g = u_can
 
-    interpolated_pos_total = Array{Float64, 4}(undef, length(prediction_mean_dict), size(sim_result, 1), size(sim_result, 2), 2);
-    interpolated_cov_total = Array{Float64, 5}(undef, length(prediction_mean_dict), size(sim_result, 1), size(sim_result, 2), 2, 2);
+    initial_g = start - ado_traj[0] 
+    g_val = [initial_g.copy() for _ in range(H)]
 
-    # get mean and cov
-    n_pedestrians = 0;
-    first_repeat = 4 - Int(round((to_sec(w_init.t) - to_sec(w_init.t_last_m))/0.1));
-    for key in keys(prediction_mean_dict)
-        n_pedestrians += 1;
+    prev_cost = np.inf
+    ccp_iters_used = 0
 
-        current_pos = current_ado_position_dict[key]';
-        mean = prediction_mean_dict[key];
-        pos = vcat(current_pos, mean);
+    e_pos = cp.Variable((H+1, 2))
+    u     = cp.Variable((H,   2))
+    beta  = cp.Variable(H)
+    M     = [cp.Variable((3, 3), PSD=True) for _ in range(H)]
 
-        currnet_pos = repeat(current_pos, inner=(first_repeat, 1));
-        mean = repeat(mean, inner=(pred_expansion_factor, 1));
-        pos = vcat(currnet_pos, mean);
-        interpolated_pos = pos[1:size(sim_result, 2), :]
-        interpolated_pos = reshape(interpolated_pos, (1, size(interpolated_pos)...));
-        interpolated_pos_total[n_pedestrians, :, :, :] = repeat(interpolated_pos, inner=(size(sim_result, 1), 1, 1));
+    # CCP iterations
+    for it in range(max_ccp_iters):   
+        #  print("ccp iters:",it)
 
-        current_cov = zeros(1, 2, 2);
-        avg_cov = repeat(prediction_cov_dict[key], inner=(pred_expansion_factor, 1, 1));
-        cov = cat(current_cov, avg_cov, dims=1);
-        interpolated_cov = cov[1:size(sim_result, 2), :, :]
-        interpolated_cov = reshape(interpolated_cov, (1, size(interpolated_cov)...));
-        interpolated_cov_total[n_pedestrians, :, :, :, :] = repeat(interpolated_cov, inner=(size(sim_result, 1), 1, 1, 1));
-    end
+        constraints = []
+        cost_expr = 0
 
-    sim_result_total = repeat(reshape(sim_result, (1, size(sim_result)...)), inner=(length(prediction_mean_dict), 1, 1, 1));
+        #  Initial state constraint: e_pos[0] equals x_current
+        constraints += [e_pos[0, :] == start]
+        constraints += [u >= -2, u <= 2]
+        # constraints += [cp.sum_squares(u) <= 1]
 
-    rel_vec = sim_result_total - interpolated_pos_total;
-    dist = sqrt.(rel_vec[:, :, :, 1].^2 + rel_vec[:, :, :, 2].^2) .- cnt_param.human_size;
+        #  Construct constraints and cost for each time step k = 1,...,H
+        for k in range(H):   
+            adjusted_k = int(k // 2)        #repeat=2
+            Omega = Omega_dict[adjusted_k]    
+            constraints.append(e_pos[k+1, 0] == e_pos[k, 0] + dtr * u[k, 0])
+            constraints.append(e_pos[k+1, 1] == e_pos[k, 1] + dtr * u[k, 1])
 
-    # GPU setting
-    # (n_pedestrians, n_controls, n_horizon)
-    out = CuArray{Float32}(undef, length(prediction_mean_dict), size(sim_result, 1), size(sim_result, 2));
-    interpolated_cov_total_gpu = cu(interpolated_cov_total);
-    rel_vec_gpu = cu(rel_vec);
-    dist_gpu = cu(dist);
-    epsilon_gpu = Float32.(cu(cnt_param.epsilon));
-    threads = threads;
-    numblocks_x = ceil(Int, size(out, 1)/threads[1]);
-    numblocks_y = ceil(Int, size(out, 2)/threads[2]);
-    numblocks_z = ceil(Int, size(out, 3)/threads[3]);
-    blocks = (numblocks_x, numblocks_y, numblocks_z);
+            # Define the expression: g_expr = (x[k] - ado_position_dict[k]) + (u[k] - u_i) * Delta_t            
+            g_x = e_pos[k, 0] - pred_data[k, 0] + dtr * u[k, 0]
+            g_y = e_pos[k, 1] - pred_data[k, 1] + dtr * u[k, 1]
 
-    CUDA.@sync begin
-        @cuda threads=threads blocks=blocks kernel_CVaR!(out, interpolated_cov_total_gpu, rel_vec_gpu, dist_gpu, epsilon_gpu)
-    end
+            # g_x_val, g_y_val = g_val[k]
+            # gx_prev, gy_prev = g_val[k]
+            gx_prev = g_val[k][0]
+            gy_prev = g_val[k][1]    
+            # gx0, gy0 = g_val[k]
+            # norm0 = np.hypot(gx0, gy0) + 1e-9
+            # gx_prev = r * gx0 / norm0
+            # gy_prev = r * gy0 / norm0 
+            # gx_prev = 0.4 * gx0 / norm0
+            # gy_prev = 0.4 * gy0 / norm0      
 
-    CVaR_key = collect(out);
-    CVaR_key[dist .<= 0.0] .= 10.0;
-    CVaR = dropdims(maximum(CVaR_key, dims=1), dims=1);
+            lin_gx2 = gx_prev**2 + 2 * gx_prev * (g_x - gx_prev)
+            lin_gy2 = gy_prev**2 + 2 * gy_prev * (g_y - gy_prev)       
+ 
+            constraints.append(beta[k] + (1/eps) * cp.trace(Omega @ M[k]) <=0)            
+  
+            # Assemble A_k as an array
+            row1 = cp.hstack([-1,     0,  g_x])
+            row2 = cp.hstack([0,     -1,  g_y])
+            row3 = cp.hstack([ g_x,  g_y,
+                            0.16- lin_gx2 - lin_gy2 - beta[k] ])
+            A_k = cp.vstack([row1, row2, row3])
+            
+            # SDP constraint: M[k] - A_k must be PSD (positive semidefinite)
+            constraints.append(M[k] - A_k >> 0)
 
-    max_CVaR = dropdims(maximum(CVaR, dims=2), dims=2);
-    discount_factor = cumprod(0.95*ones(size(sim_result, 2)));
-    sum_CVaR = CVaR * discount_factor;
+            # Accumulate cost: aim to drive the predicted state close to the goal (squared error)
+            cost_expr += cp.sum_squares(e_pos[k+1, :] - ego_pos_goal_vec) 
+            # cost_expr += (beta[k] + (1/eps) * cp.trace(Omega @ M[k]))            
+            # cost_expr += (u[k, 0]**2+u[k, 1]**2)
+            # cost_expr += cp.sum_squares(e_pos[k+1, :] - ego_pos_goal_vec)
 
-    return sum_CVaR, max_CVaR
-end
+        # Solution
+        prob = cp.Problem(cp.Minimize(cost_expr), constraints)       
+        # prob.solve(solver=cp.SCS, warm_start=True, eps_abs=1e-4, eps_rel=1e-4,verbose=False) 
+        # prob.solve(solver=cp.MOSEK, warm_start=True, mosek_params={
+        #        "MSK_DPAR_INTPNT_TOL_REL_GAP": 1e-4},verbose=True)
+        try:
+            prob.solve(solver=cp.MOSEK, warm_start=True, mosek_params={
+               "MSK_DPAR_INTPNT_TOL_REL_GAP": 1e-1},verbose=False)
+            
+        except cp.error.SolverError:
+            return [0.0, 0.0], 0.0,ccp_iters_used,"NNNN"
+        # except (cp.SolverError, Exception) as e:
+        #     print(f"[Exception caught] {e}. Returning default value.")
+        #     return [0.0, 0.0], 0.0
+        # try:
+        #     prob.solve(solver=cp.MOSEK, warm_start=True, mosek_params={"MSK_DPAR_INTPNT_TOL_REL_GAP": 1e-4})
+        # except cp.SolverError:
+        #     prob.solve(solver=cp.SCS, warm_start=True, eps_abs=1e-4, eps_rel=1e-4,verbose=False) 
 
-function kernel_CVaR!(out::AbstractArray{Float32, 3},
-                     predictive_cov::AbstractArray{Float32, 5},
-                     rel_vec::AbstractArray{Float32, 4},
-                     dist::AbstractArray{Float32, 3},
-                     epsilon::Float32)
-    # out(CVaR) : (n_pedestrians, n_controls, n_horizon)
-    # predictive_mean : (n_pedestrians, n_horizon, 2)
-    # predictive_cov : (n_pedestrians, n_horizon, 2, 2)
-    # ego_position : (n_pedestrians, n_controls, n_horizon, 2)
 
-    ii = (blockIdx().x - 1)*blockDim().x + threadIdx().x; # dimension for pedestrians
-    jj = (blockIdx().y - 1)*blockDim().y + threadIdx().y; # dimension for n_controls
-    kk = (blockIdx().z - 1)*blockDim().z + threadIdx().z; # dimension for n_horizon
-    if (ii <= size(out, 1)) && (jj <= size(out, 2)) && (kk <= size(out, 3))
-        # compute distance between mean and ego agent
-        D_11 = dist[ii, jj, kk]^(-2);
-        # D_22 = 1/100.0^2;
+        ccp_iters_used = it + 1
+        u_val   = u.value
+        e_val   = e_pos.value
+        cvar = (beta[0] + (1/eps) * cp.trace(Omega_dict[0] @ M[0])).value         
+        #  print(prob.status,".....",prob.solver_stats.solve_time,".....",prob.solver_stats.num_iters)
 
-        Q_11 = rel_vec[ii, jj, kk, 1] / dist[ii, jj, kk];
-        # Q_12 = rel_vec[ii, jj, kk, 2] / dist[ii, jj, kk];
-        Q_21 = -rel_vec[ii, jj, kk, 2] / dist[ii, jj, kk];
-        # Q_22 = rel_vec[ii, jj, kk, 1] / dist[ii, jj, kk];
+        if prob.status not in ["optimal", "optimal_inaccurate"]:
+            # print(f"Iteration {it}: solver returned invalid values, aborting CCP.")
+            return [0.0, 0.0],0.0,ccp_iters_used,prob.status
+        else:
+            # u_first = [float(u_val[0,0]), float(u_val[0,1])] 
+            cvar_rounded = round(cvar, 3)
+            if cvar_rounded >= 0:
+                u_first = [0.0,0.0]
+            else:
+                u_first = [float(u_val[0,0]), float(u_val[0,1])]                 
+                
+        for k in range(H):
+            # if u_val[k,:]!=[0.0,0.0]:
+            gx_new = e_val[k,0] - pred_data[k,0] + dtr * u_val[k,0]
+            gy_new = e_val[k,1] - pred_data[k,1] + dtr * u_val[k,1]
+            g_val[k] = np.array([gx_new, gy_new])   
 
-        E_11 = Q_11^2 * D_11; # + Q_12^2 * D_22;
-        E_12 = Q_11 * Q_21 * D_11; # + Q_12 * Q_22 * D_22;
-        E_21 = Q_21 * Q_11 * D_11; # + Q_22 * Q_12 * D_22;
-        E_22 = Q_21^2 * D_11; # + Q_22^2 * D_22;
+        curr_cost = prob.value
 
-        tr_cov_E = predictive_cov[ii, jj, kk, 1, 1] * E_11 + predictive_cov[ii, jj, kk, 1, 2] * E_21 +
-                    predictive_cov[ii, jj, kk, 2, 1] * E_12 + predictive_cov[ii, jj, kk, 2, 2] * E_22;
+    #     # If the cost converges, exit the CCP iterations
+        if it > 0 and abs(prev_cost - curr_cost) < tol_ccp:
+            break
+        prev_cost = curr_cost  
 
-        out[ii, jj, kk] = -1.0 + 1/epsilon * tr_cov_E;
-    end
+    return u_first, cvar,ccp_iters_used,prob.status
 
-    return nothing
-end
+my_solver.ccp_solver = ccp_solver
 
-function compute_CVaR(sim_result::Vector{RobotState},
-                            w_init::WorldState,
-                            cnt_param::DRCControlParameter,
-                            prediction_mean_dict::Dict{String, Array{Float64, 2}},
-                            prediction_cov_dict::Dict{String, Array{Float64, 3}},
-                            predict_idx::Vector{Int64},
-                            pred_expansion_factor::Int64);
+sys.modules["my_solver"] = my_solver
+"""
+mod = pyimport("my_solver")
+ccp_solver = mod["ccp_solver"]
 
-    CVaR = -1.0 .* ones(length(sim_result));
-
-    current_ado_position_dict = w_init.ap_dict;
-
-    for key in keys(prediction_mean_dict)
-        # get mean and cov
-        current_pos = current_ado_position_dict[key]';
-        mean = prediction_mean_dict[key];
-        pos = vcat(current_pos, mean);
-        interpolated_pos = Array{Float64, 2}(undef, length(sim_result), 2);
-        for i in 1:length(sim_result)-1
-            interpolate = (rem(i, pred_expansion_factor)/pred_expansion_factor)*pos[div(i, pred_expansion_factor)+2,:] + 
-                                (1-(rem(i, pred_expansion_factor)/pred_expansion_factor))*pos[div(i, pred_expansion_factor)+1,:];
-            interpolated_pos[i, :] = interpolate;
-        end
-        interpolated_pos[end, :] = pos[end, :];
-
-        cov = prediction_cov_dict[key];
-        for (euler_idx, pred_idx) in enumerate(predict_idx)
-            e_position = get_position(sim_result[euler_idx]);
-            # relative vector to the robot position from the human position
-            rel_vec = e_position - interpolated_pos[euler_idx, :];
-            # compute distance between mean and ego agent
-            dist = norm(rel_vec) - cnt_param.human_size;
-            if dist > 0.0
-                # Find the ellipsoid
-                # (x - p_human)^T E (x - p_human) = 1 & E = Q D Q^t
-                R = maximum([100.0, dist]);
-                D = diagm([1/dist^2, 1/R^2]);
-                Q = [rel_vec[1]/dist rel_vec[2]/dist; -rel_vec[2]/dist rel_vec[1]/dist];
-                E = Q*D*transpose(Q);
-                # compute CVaR
-                CVaR[euler_idx] = max(CVaR[euler_idx], -1 + 1/cnt_param.epsilon * tr(cov[pred_idx, :, :] * E));
-                # append!(CVaR, -1 + 1/cnt_param.epsilon * tr(cov[pred_idx, :, :] * E));
-            else
-                CVaR[euler_idx] = 1.0;
-            end
-        end
-    end
-
-    for idx in 1:length(sim_result)
-        CVaR[idx] = CVaR[idx] * 0.9^(idx-1);
-    end
-    # if isempty(CVaR)
-    #     return -100.0
-    # else
-    #     return maximum(CVaR)
-    # end
-    return sum(CVaR), maximum(CVaR)
-end
 
 # for Trajectron robot-future-conditoinal models
 function get_robot_present_and_future(e_init::RobotState,
@@ -709,3 +714,7 @@ function get_robot_present_and_future(e_init::RobotState,
 
     return robot_present_and_future
 end
+
+#///////////////////////////////////////
+#// 使用正确的均值和方差；预测轨迹进行repeat，并且无解时不为0，改了目标函数。联合机会约束
+#///////////////////////////////////////

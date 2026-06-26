@@ -14,9 +14,10 @@ if scene_mode == "data" && prediction_mode == "trajectron"
                                                    deterministic,
                                                    prediction_rng_seed);
     cost_param = DRCCostParameter(ego_pos_goal_vec, Cep, Cu, β_pos, α_col, β_col, λ_col, human_size);
-    cnt_param = DRCControlParameter(u_norm_max, tcalc, ego_pos_goal_vec, dtr, dtc, horizon, discount, human_size,
-                                        cem_init_mean, cem_init_cov, cem_init_num_samples,
-                                        cem_init_num_elites, cem_init_alpha, cem_init_iterations, epsilon);
+    println("cost_param ego_pos_goal_vec: $(ego_pos_goal_vec)")
+    cnt_param = DRCControlParameter(u_norm_max, tcalc, ego_pos_goal_vec, dtr, dtc, horizon,discount, human_size,
+                                         epsilon,safety_distance,max_ccp_iters,tol_ccp,tol_goal);
+    println("cnt_param ego_pos_goal_vec: $(ego_pos_goal_vec)")
 
 elseif scene_mode == "synthetic" && prediction_mode == "gaussian"
     rng = MersenneTwister(prediction_rng_seed);
@@ -24,10 +25,11 @@ elseif scene_mode == "synthetic" && prediction_mode == "gaussian"
     predictor_param = GaussianPredictorParameter(prediction_steps,
                                                  num_samples, deterministic, rng);
     cost_param = DRCCostParameter(ego_pos_goal_vec, Cep, Cu, β_pos, α_col, β_col, λ_col, human_size);
+    println("cost_param ego_pos_goal_vec: $(ego_pos_goal_vec)")
     cnt_param = DRCControlParameter(u_norm_max, tcalc, ego_pos_goal_vec, dtr, dtc, horizon, discount, human_size,
                                     cem_init_mean, cem_init_cov, cem_init_num_samples,
                                     cem_init_num_elites, cem_init_alpha, cem_init_iterations, epsilon);
-                                 
+    println("cnt_param ego_pos_goal_vec: $(ego_pos_goal_vec)")                             
 else
     @error "scene_mode: $(scene_mode) + prediction_mode: $(prediction_mode) is not supported!"
 end

@@ -3,7 +3,7 @@
 #// Author: Haruki Nishimura (hnishimura@stanford.edu)
 #// Date Created: 2021/01/15
 #// Modified by Kanghyun Ryu (kanghyun.ryu@berkeley.edu)
-#// Description: GPU (CUDA) Cost model for DRCC-MPC
+#// Description: GPU (CUDA) cost model for RMV-MPC
 #///////////////////////////////////////
 
 using CUDA

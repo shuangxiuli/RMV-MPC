@@ -579,8 +579,8 @@ function controller_setup(# Scene Loader parameters
                              sim_horizon=sim_horizon,
                              sim_param=sim_param);
 
-    # Controller setup
-    controller = CrowdNavController(sim_param, cnt_param);
+    # Controller setup        
+    controller = CrowdNavController(sim_param, cnt_param); 
     @assert controller.rl_robot.v_pref == target_speed "target_speed needs to match v_pref of the CrowdNav Robot"
 
     return scene_loader, controller, w_init, ado_inputs, measurement_schedule,
@@ -717,9 +717,10 @@ function make_gif(result::Union{EvaluationResult, BICEvaluationResult, CrowdNavE
                   ylim::Tuple{Float64,Float64},
                   markersize::Float64,
                   filename::String,
+                #   show_prediction=true,lsx
                   show_prediction=true,
                   show_nominal_trajectory=false,
-                  show_past_ego_trajectory=true,
+                  show_past_ego_trajectory=false,
                   dummy_pos=nothing)
     if (typeof(result) == BICEvaluationResult || typeof(result) == CrowdNavEvaluationResult) && show_prediction
         @warn "No prediction is available with BIC or CrowdNav Controller"

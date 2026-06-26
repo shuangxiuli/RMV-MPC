@@ -139,6 +139,8 @@ function sample_future_ado_positions!(predictor::TrajectronPredictor,
     return outputs_dict
 end
 
+
+
 # Oracle Predictor (for Data Scenes Only)
 struct OraclePredictorParameter <: Parameter
     prediction_steps::Int64
