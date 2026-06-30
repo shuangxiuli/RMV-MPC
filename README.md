@@ -1,6 +1,6 @@
 # RMV-MPC
 
-Official code release for the RMV-MPC method in our IROS paper on robot navigation under uncertainty.
+Official code release for the RMV-MPC method in our IROS paper "Residual-Calibrated Nonconvex Distributionally Robust Uncertainty Modeling for Safe Robot Navigation in Crowds".
 
 This repository is derived from [labicon/DRCC-MPC](https://github.com/labicon/DRCC-MPC) and retains the original third-party integrations needed for reproduction, including Trajectron++, CrowdNav, and Python-RVO2 through git submodules.
 
@@ -17,7 +17,7 @@ This public release is organized as a reproducible research codebase rather than
 
 Tested environment:
 
-- Ubuntu 20.04 (WSL2 is acceptable)
+- Ubuntu 20.04
 - ROS Noetic
 - Julia 1.7.3
 - Conda Python 3.6 environment for Trajectron++ and CrowdNav
