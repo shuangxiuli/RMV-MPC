@@ -717,7 +717,6 @@ function make_gif(result::Union{EvaluationResult, BICEvaluationResult, CrowdNavE
                   ylim::Tuple{Float64,Float64},
                   markersize::Float64,
                   filename::String,
-                #   show_prediction=true,lsx
                   show_prediction=true,
                   show_nominal_trajectory=false,
                   show_past_ego_trajectory=false,
@@ -824,11 +823,6 @@ function plot_histogram(data_array...; min_val::Real, max_val::Real, num_bins::I
              color=color[ii], label=label[ii])
         offset += delta
     end
-    #=
-    for ii = 1:length(data_array)
-        histogram!(data_array[ii], xlim=(min_val, max_val), bins=min_val:(max_val-min_val)/num_bins:max_val,
-                    title=title, xlabel=xlabel, label=label[ii], alpha=alpha);
-    end
-    =#
+
     return plt
 end

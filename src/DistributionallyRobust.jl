@@ -20,7 +20,6 @@ using Distributions
 using ForwardDiff
 using LinearAlgebra
 using Plots
-#pyplot();lsx
 using Printf
 using ProgressMeter
 using PyCall
@@ -58,7 +57,6 @@ function __init__()
     import random
     import pathlib
     import pandas as pd
-    # import evaluation
     import numpy as np
     import visualization as vis
     from easydict import EasyDict

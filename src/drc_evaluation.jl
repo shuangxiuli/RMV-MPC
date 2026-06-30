@@ -142,15 +142,11 @@ function evaluate(scene_loader::SceneLoader,
                     push!(log, (current_time, msg_2))
                     if typeof(controller.predictor) == TrajectronPredictor &&
                             controller.predictor.param.use_robot_future
-                        # schedule_prediction!(controller, ado_inputs, previous_ado_pos_dict,
-                        #                         w_history[end].e_state);
                         schedule_prediction_idx!(controller, ado_inputs, previous_ado_pos_dict,
                                                 w_history[end].e_state,current_sec,run_id);
                     elseif typeof(controller.predictor) == TrajectronPredictor
-                        # schedule_prediction!(controller, ado_inputs);
                         schedule_prediction_idx!(controller, ado_inputs,current_sec,run_id);
                     else
-                        # schedule_prediction!(controller, ado_positions, previous_ado_pos_dict);
                         schedule_prediction_idx!(controller, ado_positions, previous_ado_pos_dict,current_sec,run_id);
                     end
                     prediction_dict_history[end] = get_clipped_prediction_dict(controller.prediction_dict,
@@ -171,7 +167,6 @@ function evaluate(scene_loader::SceneLoader,
         if current_time < sim_end_time 
             if to_sec(current_time) ≈ to_sec(last_control_update_time) + controller.cnt_param.dtr;
                 # Schedule control update
-                # schedule_control_update!(controller, w_history[end], target_trajectory, log=log);
                 schedule_control_update!(controller,
                             w_history[end],target_trajectory,
                             ego_pos_goal_vec,controller.sim_param.dtc,
@@ -181,13 +176,6 @@ function evaluate(scene_loader::SceneLoader,
             end
             # Get control for current_time
             u = control!(controller, current_time, log)
-            # println("Control output at time $current_time: u = $(u)")  
-            # Stop timer and measure computation time so far in this iteration.
-          
-            # println("Current Position: $(get_position(w_history[end].e_state))")
-            # println("Goal Position: $(ego_pos_goal_vec)")
-            # println("Error Vector: $(get_position(w_history[end].e_state) - ego_pos_goal_vec)")
-
             elapsed = time() - process_start_time;
             push!(comp_time_list, elapsed);
             prediction_dict_history[end] = get_clipped_prediction_dict(controller.prediction_dict,
@@ -208,7 +196,6 @@ function evaluate(scene_loader::SceneLoader,
                                            controller.sim_param.cost_param)*
                     controller.sim_param.dtc;
                 total_collision += check_collision(w_history[end].e_state, ap, controller.sim_param.cost_param,u);
-                # total_collision += check_collision(w_history[end].e_state, ap, controller.sim_param.cost_param);
             end
 
             # Ego transition for next timestep
@@ -248,7 +235,6 @@ function evaluate(scene_loader::SceneLoader,
             terminal_collision_cost(w_history[end].e_state, ap,
                                     controller.sim_param.cost_param);
         total_collision += check_collision(w_history[end].e_state, ap, controller.sim_param.cost_param,u_history[end]);
-        # total_collision += check_collision(w_history[end].e_state, ap, controller.sim_param.cost_param);
     end
 
     # Finish All the Remaining Tasks
@@ -281,8 +267,7 @@ function evaluate(scene_loader::SceneLoader,
                          total_control_cost, total_position_cost, total_collision_cost, total_collision, log);
     end
 
-    println("Average computation time: ", mean(comp_time_list))
-    println("std of computation time: ", std(comp_time_list))
-    #println("List of computation time: ", comp_time_list)
+    # println("Average computation time: ", mean(comp_time_list))
+    # println("std of computation time: ", std(comp_time_list))
     return eval_result, controller, ado_positions, comp_time_list
 end

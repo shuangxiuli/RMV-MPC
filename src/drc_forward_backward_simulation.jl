@@ -236,8 +236,6 @@ function get_target_pos_array(ex_array_gpu::AbstractArray{Float32, 3},
                               target_trajectory::Trajectory2D,
                               sim_param::SimulationParameter)
 
-    # target_pos_aray_gpu : (total_timesteps, 2)
-    # ex_array_gpu : (num_controls, total_timesteps, 4)
 
     t_array = [w_init.t]
     for ii = 1:size(ex_array_gpu, 2) - 1
@@ -483,21 +481,4 @@ function simulate(w_init::WorldState,
     return sim_result, best_u_array
 end
 
-#=
-# Forward (re-)simulation and evaluation of risk (for potential line search which is not implemented yet)
-function evaluate_risk(w_init::WorldState,
-                       u_array::Vector{Vector{Float64}},
-                       target_trajectory::Trajectory2D,
-                       ap_array_gpu::CuArray{Float32, 4},
-                       sim_param::SimulationParameter)
-    # ego state simulation
-    e_state_array = simulate_forward(w_init.e_state, u_array, sim_param);
-    # export to gpu
-    ep_array_gpu = cu(hcat(get_position.(e_state_array)...));
-    # compute costs
-    cost_result = compute_costs(e_state_array, ep_array_gpu, u_array, ap_array_gpu,
-                                target_trajectory, sim_param.cost_param);
-    ~, risk_val = integrate_costs(cost_result, sim_param);
-    return risk_val
-end
-=#
+

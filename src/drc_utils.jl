@@ -208,7 +208,6 @@ function controller_setup(# Scene Loader parameters
     if predictor.param.use_robot_future
         schedule_prediction!(controller, ado_inputs, w_init.e_state);
     else
-        # schedule_prediction!(controller, ado_inputs);
         schedule_prediction!(controller, ado_inputs,run_id);
     end
     wait(controller.prediction_task);
@@ -280,34 +279,6 @@ function display_log(log::Vector{Tuple{Time, String}})
 end
 
 
-# plot helper functions
-#=
-function visualize!(color_dict::Dict, ap_dict::Dict{String, Vector{Float64}},
-                    outputs_dict::Dict{String, Array{Float64, 3}};
-                    xlim=(0., 20.), ylim=(0., 20.), markersize=8.0)
-    plt = plot(xlim=xlim, ylim=ylim, aspect_ratio=1.0, xlabel="x[m]",
-               ylabel="y[m]");
-    for key in keys(ap_dict)
-        if !haskey(color_dict, key)
-            color_dict[key] = palette(:default)[length(color_dict) + 1];
-        end
-        scatter!((ap_dict[key][1], ap_dict[key][2]),
-                 color=color_dict[key], label="", #label=key,
-                 markersize=markersize/1.5, markershape=:rect);
-        if haskey(outputs_dict, key)
-            for jj = 1:size(outputs_dict[key], 1)
-                plot!(outputs_dict[key][jj, :, 1], outputs_dict[key][jj, :, 2],
-                      color=color_dict[key], label="", alpha=0.3)
-            end
-        end
-        #jj = 5
-        #plot!(outputs_array[ii, jj, :, 1], outputs_array[ii, jj, :, 2],
-        #      color=color_dict[node_names_and_pos[ii][1]], label="", alpha=0.3)
-    end
-    return plt
-end
-=#
-
 function visualize!(color_dict::Dict, w::WorldState,
                     target_trajectory::Trajectory2D,
                     outputs_dict::Dict{String, Array{Float64, 3}},
@@ -374,9 +345,6 @@ function visualize!(color_dict::Dict, w::WorldState,
                 end
             end
         end
-        #jj = 5
-        #plot!(outputs_array[ii, jj, :, 1], outputs_array[ii, jj, :, 2],
-        #      color=color_dict[node_names_and_pos[ii][1]], label="", alpha=0.3)
     end
     return plt
 end
@@ -415,11 +383,7 @@ function make_gif(result::DRCEvaluationResult;
                 prediction_dict = result.prediction_dict_history[ii];
                 prediction_dict_last = prediction_dict;
             end
-            #if ii == length(result.w_history)
-            #    u_nominal_idx = result.u_nominal_idx_history[ii - 1]
-            #else
-            #    u_nominal_idx = result.u_nominal_idx_history[ii]
-            #end
+
             if show_nominal_trajectory
                 nominal_trajectory = result.nominal_trajectory_history[ii]
             else
@@ -429,8 +393,6 @@ function make_gif(result::DRCEvaluationResult;
                              result.target_trajectory_history[ii],
                              prediction_dict,
                              result.sim_param.num_samples,
-                             # u_nominal_idx,
-                             # nominal_trajectory,
                              figsize, legend,
                              legendfontsize,
                              xlim, ylim, markersize,
@@ -488,11 +450,5 @@ function plot_histogram(data_array...; min_val::Real, max_val::Real, num_bins::I
              color=color[ii], label=label[ii])
         offset += delta
     end
-    #=
-    for ii = 1:length(data_array)
-        histogram!(data_array[ii], xlim=(min_val, max_val), bins=min_val:(max_val-min_val)/num_bins:max_val,
-                    title=title, xlabel=xlabel, label=label[ii], alpha=alpha);
-    end
-    =#
     return plt
 end

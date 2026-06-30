@@ -20,7 +20,6 @@ using Distributions
 using ForwardDiff
 using LinearAlgebra
 using Plots
-#pyplot();lsx
 using Printf
 using ProgressMeter
 using PyCall

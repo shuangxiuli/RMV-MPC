@@ -109,19 +109,7 @@ function control!(controller::RSSACController,
         #controller.u_value = copy(controller.u_value_tmp);
         controller.control_update_task = nothing;
         # update u_schedule as well.
-        #=
-        if controller.u_init_time < current_time
-            if controller.u_last_time < current_time
-                # This means that the sac control update was not performed in tcalc time.
-                # In this case, just skip this part so the controller uses the nominal control.
-                t = @sprintf "Time %.2f" round(to_sec(current_time), digits=5)
-                @warn "$(t) [sec]: SAC control command is too old. Ignoring this SAC control."
-            else
-                # Rewrite u_init_time to make sure it is not in the past.
-                controller.u_init_time = current_time;
-            end
-        end
-        =#
+
         for time in keys(controller.u_schedule_tmp)
             if  !haskey(controller.u_schedule, time);
                 continue;
